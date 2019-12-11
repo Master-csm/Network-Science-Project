@@ -1,0 +1,201 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# ## GCN implementation with cora
+
+# In[1]:
+
+
+#install required libraries
+# installation commands changes with plateforms.the following commands can be used for anaconda on windows 10
+#conda install -c dglteam dgl
+#conda install pytorch torchvision cudatoolkit=10.1 -c pytorch
+#pip install networkx
+
+
+# In[1]:
+
+
+import dgl
+import dgl.function as fn
+import torch as th
+import torch.nn as nn
+from dgl.data import citation_graph as citegrh
+import torch.nn.functional as F
+from dgl import DGLGraph
+import time
+import csv
+import pandas as pd
+import numpy as np
+import networkx as nx
+import matplotlib.pyplot as plt
+gcn_msg = fn.copy_src(src='h', out='m')
+gcn_reduce = fn.sum(msg='m', out='h')
+
+
+class NodeApplyModule(nn.Module):
+    def __init__(self, in_feats, out_feats, activation):
+        super(NodeApplyModule, self).__init__()
+        self.linear = nn.Linear(in_feats, out_feats)
+        self.activation = activation
+
+    def forward(self, node):
+        h = self.linear(node.data['h'])
+        h = self.activation(h)
+        return {'h' : h}
+class GCN(nn.Module):
+    def __init__(self, in_feats, out_feats, activation):
+        super(GCN, self).__init__()
+        self.apply_mod = NodeApplyModule(in_feats, out_feats, activation)
+
+    def forward(self, g, feature):
+        g.ndata['h'] = feature
+        g.update_all(gcn_msg, gcn_reduce)
+        g.apply_nodes(func=self.apply_mod)
+        return g.ndata.pop('h')
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.gcn1 = GCN(1433, 16, F.relu)
+        self.gcn2 = GCN(16, 7, F.relu)
+    def forward(self, g, features):
+        x = self.gcn1(g, features)
+        x = self.gcn2(g, x)
+        return x
+net = Net()
+
+
+def load_cora_data():
+    data = citegrh.load_cora()
+    features = th.FloatTensor(data.features)
+    labels = th.LongTensor(data.labels)
+    train_mask = th.ByteTensor(data.train_mask)
+    test_mask = th.ByteTensor(data.test_mask)
+    g = data.graph
+    g.remove_edges_from(nx.selfloop_edges(g))
+    g = DGLGraph(g)
+    g.add_edges(g.nodes(), g.nodes())
+    return g, features, labels, train_mask, test_mask
+def evaluate(model, g, features, labels, mask):
+    model.eval()
+    with th.no_grad():
+        logits = model(g, features)
+        logits = logits[mask]
+        labels = labels[mask]
+        _, indices = th.max(logits, dim=1)
+        correct = th.sum(indices == labels)
+        return correct.item() * 1.0 / len(labels)
+
+
+g, features, labels, train_mask, test_mask = load_cora_data()
+
+optimizer = th.optim.Adam(net.parameters(), lr=1e-3)
+dur = []
+val_loss = []
+epochs = 50
+for epoch in range(epochs):
+    if epoch >=3:
+        t0 = time.time()
+    logits = net(g, features)
+    logp = F.log_softmax(logits, 1)
+    loss = F.nll_loss(logp[train_mask], labels[train_mask])
+    val_loss.append(loss.item())
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    
+    if epoch >=3:
+        dur.append(time.time() - t0)
+
+    print("Epoch {:05d} | Loss {:.4f} | Time(s) {:.4f}".format(
+            epoch, loss.item(), np.mean(dur)))
+    
+
+
+# In[8]:
+
+
+acc = evaluate(net, g, features, labels, test_mask)
+print("Epoch {:05d} | Loss {:.4f} | Test Acc {:.4f} | Time(s) {:.4f}".format(
+            epoch, loss.item(), acc, np.mean(dur)))
+
+
+# In[29]:
+
+
+fig = plt.figure(figsize=(8,5))
+plt.title("GCN validation results")
+plt.plot(val_loss, label = "val_loss")
+plt.xlabel("number of epochs")
+plt.ylabel("")
+plt.show()
+plt.savefig("val_plot.png")
+
+
+# In[31]:
+
+
+with open("results_cora_25.csv",'w') as file:
+    writer = csv.writer(file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(val_loss)
+    writer.writerow(dur)
+    file.close()
+    
+
+
+# In[20]:
+
+
+g, features, labels, mask = load_cora_data()
+msk = mask.numpy()
+m = np.zeros(len(msk))
+per = int((len(msk)*25)/100)
+m[:per]=1
+m = th.from_numpy(m)
+m = m.type(th.long)
+mask = m
+labels = labels.type(th.long)
+optimizer = th.optim.Adam(net.parameters(), lr=1e-2)
+dur = []
+val_loss = []
+epochs = 50
+for epoch in range(epochs):
+    if epoch >=3:
+        t0 = time.time()
+    logits = net(g, features)
+    logp = F.log_softmax(logits, 1)
+    loss = F.nll_loss(logp[mask], labels[mask])
+    val_loss.append(loss.item())
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    
+    if epoch >=3:
+        dur.append(time.time() - t0)
+
+    print("Epoch {:05d} | Loss {:.4f} | Time(s) {:.4f}".format(
+            epoch, loss.item(), np.mean(dur)))
+    
+
+
+# In[21]:
+
+
+fig = plt.figure(figsize=(8,5))
+plt.title("GCN validation results")
+plt.plot(val_loss, label = "val_loss")
+plt.xlabel("number of epochs")
+plt.ylabel("")
+plt.show()
+plt.savefig("val_plot.png")
+
+
+# In[18]:
+
+
+with open("results_cora_75.csv",'w') as file:
+    writer = csv.writer(file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(val_loss)
+    writer.writerow(dur)
+    file.close()
+
